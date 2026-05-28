@@ -1,18 +1,21 @@
 using AuxiliarClasses;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using Unity.VisualScripting;
 using UnityEngine;
 
 public class ChunkObject : MonoBehaviour // Chunk and Cluster
 {
-    List<WorldVertex> vertices;
+    WorldVertex[] vertices;
 
     public GameObject chunkAsset;
 
     // Añadido desde el asset
     Mesh mesh;
     [SerializeField] MeshCollider meshCollider;
+
+    public int indexPos { get; set; } // Posición del chunk en la lista de chunks, se asigna desde el ChunkController al crear el chunk, se utiliza para gestionar los chunks y sus LoDs
 
     readonly int baseSize = 20; // Serían 21, pero para hacer - 1 y luego + 1 de nuevo lo dejo en 20
     int baseSide;
@@ -21,168 +24,188 @@ public class ChunkObject : MonoBehaviour // Chunk and Cluster
     int chunkSideX; // Cantidad de chunks de los que está compuesto de lado X
     int chunkSideZ; // Cantidad de chunks de los que está compuesto de lado Z
     int lodLevel;
+    int lodOffset; // Cantidad de elementos a sumar en el índice para acceder a la posición de los chunks de los que se compone
 
-    [Range(1, 5)]
-    [SerializeField] int density;
+    public int density { get; set; }
 
     Vector3[] meshVertices;
     int[] triangles;
     Color[] colors;
 
     // Actualiza los datos del chunk, se comporta como un constructor
-    public void DataUpdate(List<WorldVertex> _vertices, int _clusterSideX, int _clusterSideZ)
+    public void DataUpdate(IEnumerable<WorldVertex> _vertices, int _clusterSideX, int _clusterSideZ)
     {
-        meshCollider.enabled = true;
+        meshCollider.enabled = false;
 
-        vertices = _vertices;
-        baseSide = 21 + 20 * density;
+        vertices = _vertices.ToArray();
 
         clusterSideX = _clusterSideX;
         clusterSideZ = _clusterSideZ;
+        
+        baseSide = 21 + 20 * density;
 
-        chunkSideX = (clusterSideX - 1) / 20;
-        chunkSideZ = (clusterSideZ - 1) / 20;
+        chunkSideX = (clusterSideX - 1) / baseSize * density;
+        chunkSideZ = (clusterSideZ - 1) / baseSize * density;
 
         lodLevel = chunkSideX >= chunkSideZ ? chunkSideX : chunkSideZ;
 
-        LoadMesh();
+        lodOffset = lodLevel - lodLevel / 2;
     }
 
     // Función de unión de chunks con distintas sobrecargas
-    public void ChunkFusion(ChunkObject chunkObject0, ChunkObject chunkObject1, ChunkObject chunkObject2) // Fusión cuadrada, se unen 4 chunks o clusters
+    public void ChunkFusion() // Fusión cuadrada, se unen 4 chunks o clusters
     {
-        // Añadir cluster/chunk que se encuentra a la dcha
-        
-        for (int v = 0, i = 0; i < clusterSideZ; i++)
+        int indexX = indexPos + chunkSideX;
+        int indexZ = indexPos + chunkSideZ * ChunkController.chunkSide;
+        int indexXZ = indexX + indexZ - indexPos;
+        WorldVertex[] auxVertices;
+        if (indexX <= ChunkController.chunkSide * ChunkController.chunkSide - 1 && indexPos / ChunkController.chunkSide == indexX / ChunkController.chunkSide) // Comprueba que es válido dentro del índice y que no se encuentra en la siguiente fila
         {
-            v += clusterSideX;
-
-            vertices.InsertRange(v, chunkObject0.vertices.GetRange(i * chunkObject0.clusterSideX + 1, chunkObject0.clusterSideX - 1)); // Dentro del rango sse omite añadir el primero del nuevo chunk ya que es el mismo que el último de la fila de este
+            var clusterX = ChunkController.chunkList[indexX];
+            auxVertices = new WorldVertex[clusterSideZ * (clusterSideX + clusterX.clusterSideX - 1)];
             
-            v += chunkObject0.clusterSideX - 1;
-        }
-
-        clusterSideX += chunkObject0.clusterSideX - 1;
-
-        for (int i = 1; i < chunkObject1.clusterSideZ; i++) // Comienza en 1 para saltarse la primera fila, ya que se repite, al igual que en el otro caso
-        {
-            vertices.AddRange(chunkObject1.vertices.GetRange(i * chunkObject1.clusterSideX, chunkObject1.clusterSideX));
-            vertices.AddRange(chunkObject2.vertices.GetRange(i * chunkObject2.clusterSideX + 1, chunkObject2.clusterSideX - 1));
-        }
-
-        clusterSideZ += chunkObject1.clusterSideZ - 1;
-
-        chunkSideX += chunkObject0.chunkSideX;
-        chunkSideZ += chunkObject1.chunkSideZ;
-
-        Destroy(chunkObject0.gameObject);
-        Destroy(chunkObject1.gameObject);
-        Destroy(chunkObject2.gameObject);
-
-        LoadMesh();
-    }
-
-    public void ChunkFusion(ChunkObject chunkObject0, bool up) // Solo se unen dos chunks o clusters
-    {
-        if (!up)
-        {
-            for (int v = 0, i = 0; i < clusterSideZ; i++)
+            for (int v = 0, z = 0; z < clusterSideZ; z++)
             {
-                v += clusterSideX;
+                for (int x = 0; x < clusterSideX; x++)
+                {
+                    auxVertices[v] = vertices[x + z * clusterSideX];
+                    v++;
+                }
 
-                vertices.InsertRange(v, chunkObject0.vertices.GetRange(i * chunkObject0.clusterSideX + 1, chunkObject0.clusterSideX - 1));
-
-                v += chunkObject0.clusterSideX - 1;
+                for (int i = 1; i < clusterX.clusterSideX; i++) // Comienza en 1 para saltarse la primera columna, ya que se repite, al igual que en el otro caso
+                {
+                    auxVertices[v] = clusterX.vertices[z * clusterX.clusterSideX + i];
+                    v++;
+                }
             }
 
-            clusterSideX += chunkObject0.clusterSideX - 1;
-            chunkSideX += chunkObject0.chunkSideX;
+            clusterSideX += clusterX.clusterSideX - 1;
+
+            DataUpdate(auxVertices, clusterSideX, clusterSideZ);
+
+            clusterX.gameObject.SetActive(false);
         }
-        else
+        else if (indexZ <= ChunkController.chunkSide * ChunkController.chunkSide - 1) // Comprueba que es válido dentro del índice
         {
-            for (int i = 1; i < chunkObject0.clusterSideZ; i++) 
+            var clusterZ = ChunkController.chunkList[indexZ];
+            auxVertices = new WorldVertex[clusterSideX * (clusterSideZ + (clusterZ.clusterSideZ - 1))];
+            int v = 0;
+            for (int i = 0; i < vertices.Length; i++) // Introduce los vertices del cluster actual en el nuevo array directamente ya que mantienen la misma posición debido a que los nuevos vértices se añaden al final
             {
-                vertices.AddRange(chunkObject0.vertices.GetRange(i * chunkObject0.clusterSideX, chunkObject0.clusterSideX));
+                auxVertices[v] = vertices[i];
+                v++;
+            }
+            for (int z = 1; z < clusterZ.clusterSideZ; z++) // Comienza en 1 para saltarse la primera fila, ya que se repite, al igual que en el otro caso
+            {
+                for (int x = 0; x < clusterZ.clusterSideX; x++)
+                {
+                    auxVertices[v] = clusterZ.vertices[x + z * clusterZ.clusterSideX];
+                    v++;
+                }   
             }
 
-            clusterSideZ += chunkObject0.clusterSideZ - 1;
-            chunkSideZ += chunkObject0.chunkSideZ;
-        }
+            clusterSideZ += clusterZ.clusterSideZ - 1;
 
-        Destroy(chunkObject0.gameObject);
+            DataUpdate(auxVertices, clusterSideX, clusterSideZ);
+
+            clusterZ.gameObject.SetActive(false);
+        }
+        else // Añade los 3 cluster al cluster base
+        {
+            var clusterX = ChunkController.chunkList[indexX];
+            var clusterZ = ChunkController.chunkList[indexZ];
+            var clusterXZ = ChunkController.chunkList[indexXZ];
+            auxVertices = new WorldVertex[(clusterSideX + clusterX.clusterSideX - 1) * (clusterSideZ + clusterZ.clusterSideZ - 1)];
+            int v = 0;
+
+            for (int z = 0; z < clusterSideZ; z++)
+            {
+                for (int x = 0; x < clusterSideX; x++)
+                {
+                    auxVertices[v] = vertices[x + z * clusterSideX];
+                    v++;
+                }
+
+                for (int i = 1; i < clusterX.clusterSideX; i++) // Comienza en 1 para saltarse la primera columna, ya que se repite, al igual que en el otro caso
+                {
+                    auxVertices[v] = clusterX.vertices[z * clusterX.clusterSideX + i];
+                    v++;
+                }
+            }
+
+            clusterSideX += clusterX.clusterSideX - 1;
+
+            for (int z = 1; z < clusterZ.clusterSideZ; z++) // Comienza en 1 para saltarse la primera fila, ya que se repite
+            {
+                for (int x = 0; x < clusterZ.clusterSideX; x++)
+                {
+                    auxVertices[v] = clusterZ.vertices[x + z * clusterZ.clusterSideX];
+                    v++;
+                }
+
+                for (int i = 1; i < clusterXZ.clusterSideX; i++) // Comienza en 1 para saltarse la primera columna, ya que se repite
+                {
+                    auxVertices[v] = clusterXZ.vertices[z * clusterXZ.clusterSideX + i];
+                    v++;
+                }
+            }
+
+            clusterSideZ += clusterZ.clusterSideZ - 1;
+
+            DataUpdate(auxVertices, clusterSideX, clusterSideZ);
+
+            clusterX.gameObject.SetActive(false);
+            clusterZ.gameObject.SetActive(false);
+            clusterXZ.gameObject.SetActive(false);  
+        }
 
         LoadMesh();
     }
 
     // Función de separación de chunks
-    public void ChunkDivision()
+    public void ChunkDivision() // Cambiar a arrays
     {
-        List<WorldVertex> _vertices = new();
-        List<WorldVertex> _vertices0 = new();
         ChunkObject chunkAssetScript;
 
         // Valores si son iguales
         int ownVertices = (baseSide - 1) * (chunkSideX - chunkSideX / 2) + 1;
-        int extraVertices = (baseSide - 1) * (chunkSideX / 2) + 1;
-        
+
         if (chunkSideX != chunkSideZ)
         {
             ownVertices = chunkSideX > chunkSideZ ? (baseSide - 1) * chunkSideZ + 1 : (baseSide - 1) * chunkSideX + 1;
         }
 
-        if (chunkSideX != chunkSideZ)
-        {
-            extraVertices = chunkSideX > chunkSideZ ? (baseSide - 1) * (chunkSideX - chunkSideZ) + 1 : (baseSide - 1) * (chunkSideZ - chunkSideX) + 1;
-        }        
+        WorldVertex[] auxVertices = new WorldVertex[ownVertices * ownVertices];
 
-        if (chunkSideX == chunkSideZ)
+        for (int v = 0, z = 0; z < ownVertices; z++) // Añade los vertices del chunk base al nuevo array para su posterior asignación al chunk base. Siempre se encuentra en la esquina inferior izquierda
         {
-            _vertices0.AddRange(vertices.GetRange(clusterSideX * ownVertices - extraVertices - 1 , extraVertices));
-        }
-
-        if (chunkSideX >= chunkSideZ)
-        {
-            for (int r = 1; r <= ownVertices; r++) // Chunk abajo dcha
+            for (int x = 0; x < ownVertices; x++)
             {
-                _vertices.AddRange(vertices.GetRange(r * ownVertices - 1, extraVertices));            
-
-                vertices.RemoveRange(r * ownVertices, extraVertices - 1);
+                auxVertices[v] = vertices[x + z * clusterSideX];
+                v++;
             }
-
-            chunkAssetScript = Instantiate(chunkAsset, transform.position + new Vector3((chunkSideX - chunkSideX / 2) * baseSize, 0, 0), Quaternion.identity).GetComponent<ChunkObject>();
-
-            chunkAssetScript.DataUpdate(_vertices, extraVertices, ownVertices);
-
-            _vertices.Clear();
-
-        }
-
-        if (chunkSideX <= chunkSideZ)
-        {
-            for (int r = 0; r < extraVertices; r++) // Chunk arriba
-            {
-                _vertices.AddRange(vertices.GetRange((ownVertices * ownVertices - ownVertices) + ownVertices * r + r, ownVertices));
-
-                vertices.RemoveRange((ownVertices * ownVertices - ownVertices) + ownVertices * r + r, ownVertices - 1);
-            }
-
-            chunkAssetScript = Instantiate(chunkAsset, transform.position + new Vector3(0, 0, (chunkSideX - chunkSideX / 2) * baseSize), Quaternion.identity).GetComponent<ChunkObject>();
-
-            chunkAssetScript.DataUpdate(_vertices, ownVertices, extraVertices);
-
-            _vertices.Clear();
         }
 
         if (chunkSideX == chunkSideZ)
         {
-            chunkAssetScript = Instantiate(chunkAsset, transform.position + new Vector3((chunkSideX - chunkSideX / 2) * baseSize, 0, (chunkSideX - chunkSideX / 2) * baseSize), Quaternion.identity).GetComponent<ChunkObject>();
+            ChunkController.chunkList[indexPos + lodOffset].gameObject.SetActive(true); // Activa chunk abajo dcha
+            ChunkController.chunkList[indexPos + lodOffset * ChunkController.chunkSide].gameObject.SetActive(true); // Activa chunk arriba izq
+            ChunkController.chunkList[indexPos + lodOffset + lodOffset * ChunkController.chunkSide].gameObject.SetActive(true); // Activa chunk arriba dcha            
+        }
+        else if (chunkSideX >= chunkSideZ)
+        {
 
-            chunkAssetScript.DataUpdate(_vertices0, extraVertices, extraVertices);
+            ChunkController.chunkList[indexPos + lodOffset].gameObject.SetActive(true); // Chunk abajo dcha
 
-            _vertices0.Clear();
+        }
+        else
+        {
+            ChunkController.chunkList[indexPos + lodOffset * ChunkController.chunkSide].gameObject.SetActive(true); // Chunk arriba izq
         }
 
-        DataUpdate(vertices, ownVertices, ownVertices);
+        DataUpdate(auxVertices, ownVertices, ownVertices);
+
+        LoadMesh();
     }
 
     public void LoadMesh()
@@ -199,8 +222,8 @@ public class ChunkObject : MonoBehaviour // Chunk and Cluster
     {
         meshVertices = new Vector3[baseSide * baseSide];
 
-        float coordAdditionX = (float) (baseSize * chunkSideX + 1) / baseSide - 1; // Cuanto hay que añadir por vertice en las coord si damos por hecho que cada chunk base es de 20m * 20m // La formula (baseSide * chunkSideC + 1) calcula cual sería la cantidad de vertices con desidad = 1
-        float coordAdditionZ = (float) (baseSize * chunkSideZ + 1) / baseSide - 1;
+        float coordAdditionX = (float) (baseSize * chunkSideX) / baseSide - 1; // Cuanto hay que añadir por vertice en las coord si damos por hecho que cada chunk base es de 20m * 20m // La formula (baseSide * chunkSide + 1) calcula cual sería el tamaño total de los chunks.
+        float coordAdditionZ = (float) (baseSize * chunkSideZ) / baseSide - 1;
 
         for (int v = 0, z = 0; z < baseSide; z++)
         {

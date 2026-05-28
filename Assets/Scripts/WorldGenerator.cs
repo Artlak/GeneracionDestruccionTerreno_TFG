@@ -23,6 +23,8 @@ public class WorldGenerator : MonoBehaviour
 
     [SerializeField] Gradient defaultBiomeColor;
 
+    public ChunkController chunkController;
+
     int verticesSide;
     int verticesSideAux;
 
@@ -30,14 +32,7 @@ public class WorldGenerator : MonoBehaviour
     {
         verticesSide = chunksSide * 20 + 1; // 20 porque salvo la línea extra que todos usan del anterior, usan 20 propios.
 
-        if (density > 1)
-        {
-            verticesSideAux = verticesSide + (verticesSide - 1) * (density - 1); // Los elementos extra se calculan con en número de vértices totales - 1 por la densidad. chunksSide * 20 * density también sería una operación válida;
-        }
-        else
-        {
-            verticesSideAux = verticesSide;
-        }
+        verticesSideAux = verticesSide + (verticesSide - 1) * (density - 1); // Los elementos extra se calculan con en número de vértices totales - 1 por la densidad. chunksSide * 20 * density + 1 también sería una operación válida para calcular todos los elementos laterales;
 
         worldVertices = new WorldVertex[verticesSideAux * verticesSideAux];
 
@@ -63,6 +58,12 @@ public class WorldGenerator : MonoBehaviour
         }
 
         Debug.Log("Mapa de vertices creado");
+
+        chunkController.CreateChunks(worldVertices, chunksSide, density);
+
+        worldVertices = null; // Limpieza de la variable para liberar memoria, ya que es bastante pesada y no se va a usar más
+
+        
     }
 
     void VertexListCreator() // Añade la cantidad de vertices necesarios al arrayList
